@@ -46,7 +46,7 @@ const SHORT_LABELS = {
 
 /** Webアプリとしてアクセスされたときに画面を返す */
 function doGet() {
-  return HtmlService.createHtmlOutputFromFile('Index')
+  return HtmlService.createHtmlOutputFromFile('index')
     .setTitle('建築材料学研究室 名簿の表示・編集')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
