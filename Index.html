@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <style>
+    body { font-family: sans-serif; margin: 16px; color: #222; }
+    h1 { font-size: 1.3em; }
+    #search { width: 100%; max-width: 400px; padding: 6px; margin-bottom: 8px; box-sizing: border-box; }
+    .table-wrap { overflow-x: auto; max-height: 45vh; border: 1px solid #ccc; }
+    table { border-collapse: collapse; width: 100%; font-size: 0.9em; }
+    th, td { border-bottom: 1px solid #eee; padding: 6px 8px; text-align: left; white-space: nowrap; }
+    th { background: #f4f4f4; position: sticky; top: 0; }
+    tbody tr.data { cursor: pointer; }
+    tbody tr.data:hover { background: #eef5ff; }
+    tbody tr.selected { background: #d6e8ff; }
+    #editor { margin-top: 20px; padding: 16px; border: 1px solid #ccc; border-radius: 6px; max-width: 640px; }
+    .field { margin-bottom: 10px; }
+    .field label { display: block; font-weight: bold; font-size: 0.85em; margin-bottom: 2px; }
+    .field input { width: 100%; padding: 6px; box-sizing: border-box; }
+    .field input[readonly] { background: #f0f0f0; color: #666; }
+    .field.changed input { border: 2px solid #f0a000; }
+    .buttons { position: sticky; bottom: 0; background: #fff; padding: 8px 0; }
+    button { padding: 8px 16px; margin-right: 8px; cursor: pointer; }
+    #msg { margin-top: 6px; }
+    .ok { color: #1a7f37; } .err { color: #c00; }
+  </style>
+</head>
+<body>
+  <h1>建築材料学研究室 名簿の表示・編集</h1>
+
+  <input id="search" type="search" placeholder="絞り込み（氏名・学籍番号など、どの項目でも可）">
+  <div class="table-wrap">
+    <table>
+      <thead><tr id="head"></tr></thead>
+      <tbody id="body"><tr><td>読み込み中…</td></tr></tbody>
+    </table>
+  </div>
+
+  <div id="editor" hidden>
+    <h2 id="editorTitle" style="font-size:1.1em"></h2>
+    <form id="form"></form>
+    <div class="buttons">
+      <button id="saveBtn">保存</button>
+      <button id="cancelBtn" type="button">閉じる</button>
+      <div id="msg"></div>
+    </div>
+  </div>
+
+  <script>
+    let data = { columns: [], rows: [] };
+    let current = null; // 編集中のレコード
+
+    const $ = (id) => document.getElementById(id);
+
+    function showMsg(text, ok) {
+      $('msg').textContent = text;
+      $('msg').className = ok ? 'ok' : 'err';
+    }
+
+    // "1978/02/10" <-> "1978-02-10"（input type=date 用）
+    const toInputDate = (s) => {
+      const m = s.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})$/);
+      return m ? `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}` : '';
+    };
+    const fromInputDate = (s) => (s ? s.replace(/-/g, '/') : '');
+
+    // 一覧を読み込む
+    function loadAll() {
+      google.script.run
+        .withSuccessHandler((res) => { data = res; renderTable(); })
+        .withFailureHandler((e) => { $('body').innerHTML = ''; messageRow('読み込み失敗: ' + e.message); })
+        .getAllData();
+    }
+
+    function messageRow(text) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.textContent = text;
+      td.colSpan = 99;
+      tr.appendChild(td);
+      $('body').appendChild(tr);
+    }
+
+    // 一覧表を描画（textContentを使いHTMLとして解釈させない）
+    function renderTable() {
+      const listIdx = data.columns.map((c, i) => (c.inList ? i : -1)).filter((i) => i >= 0);
+
+      const head = $('head');
+      head.innerHTML = '';
+      ['行', ...listIdx.map((i) => data.columns[i].label)].forEach((h) => {
+        const th = document.createElement('th');
+        th.textContent = h;
+        head.appendChild(th);
+      });
+
+      const q = $('search').value.trim().toLowerCase();
+      const body = $('body');
+      body.innerHTML = '';
+      // 検索は一覧に出ていない列も含めて全項目が対象
+      const rows = data.rows.filter((r) => !q || r.values.some((v) => v.toLowerCase().includes(q)));
+      if (rows.length === 0) { messageRow('該当するデータがありません'); return; }
+
+      rows.forEach((r) => {
+        const tr = document.createElement('tr');
+        tr.className = 'data' + (current && current.row === r.row ? ' selected' : '');
+        [r.row, ...listIdx.map((i) => r.values[i])].forEach((v) => {
+          const td = document.createElement('td');
+          td.textContent = v;
+          tr.appendChild(td);
+        });
+        tr.addEventListener('click', () => openRecord(r.row));
+        body.appendChild(tr);
+      });
+    }
+
+    // 1レコードを取得して編集フォームに表示
+    function openRecord(row) {
+      showMsg('', true);
+      google.script.run
+        .withSuccessHandler((rec) => { current = rec; renderForm(); renderTable(); })
+        .withFailureHandler((e) => showMsg('取得失敗: ' + e.message, false))
+        .getRecord(row);
+    }
+
+    function renderForm() {
+      $('editor').hidden = false;
+      const nameIdx = data.columns.findIndex((c) => c.header === '氏名（大学登録表記）');
+      const name = nameIdx >= 0 ? current.values[nameIdx] : '';
+      $('editorTitle').textContent = `${current.row} 行目を編集${name ? '：' + name : ''}`;
+
+      const form = $('form');
+      form.innerHTML = '';
+      data.columns.forEach((col, i) => {
+        const div = document.createElement('div');
+        div.className = 'field';
+        const label = document.createElement('label');
+        const locked = col.readonly || current.formulaCols[i];
+        label.textContent = col.label + (current.formulaCols[i] ? '（数式のため編集不可）' : '');
+        label.title = col.header; // 元の質問文はマウスを乗せると表示
+        label.htmlFor = 'f' + i;
+
+        const input = document.createElement('input');
+        input.id = 'f' + i;
+        input.dataset.index = i;
+        input.readOnly = locked;
+        const original = current.values[i];
+        if (col.type === 'date' && !locked && (original === '' || toInputDate(original))) {
+          input.type = 'date';
+          input.value = toInputDate(original);
+        } else {
+          input.value = original;
+        }
+
+        if (col.suggestions && !locked) {
+          const dl = document.createElement('datalist');
+          dl.id = 'dl' + i;
+          col.suggestions.forEach((s) => {
+            const opt = document.createElement('option');
+            opt.value = s;
+            dl.appendChild(opt);
+          });
+          div.appendChild(dl);
+          input.setAttribute('list', dl.id);
+        }
+
+        // 変更した項目を色で示す
+        input.addEventListener('input', () => {
+          div.classList.toggle('changed', readValue(input) !== original);
+        });
+
+        div.append(label, input);
+        form.appendChild(div);
+      });
+      $('editor').scrollIntoView({ behavior: 'smooth' });
+    }
+
+    function readValue(input) {
+      return input.type === 'date' ? fromInputDate(input.value) : input.value.trim();
+    }
+
+    // 保存
+    $('saveBtn').addEventListener('click', () => {
+      if (!current) return;
+      const newValues = [...$('form').querySelectorAll('input')].map(readValue);
+      if (newValues.every((v, i) => v === current.values[i])) {
+        showMsg('変更はありません', true);
+        return;
+      }
+      $('saveBtn').disabled = true;
+      showMsg('保存中…', true);
+      google.script.run
+        .withSuccessHandler((rec) => {
+          current = rec;
+          renderForm();
+          showMsg('保存しました', true);
+          $('saveBtn').disabled = false;
+          loadAll(); // 一覧も更新
+        })
+        .withFailureHandler((e) => {
+          showMsg('保存失敗: ' + e.message, false);
+          $('saveBtn').disabled = false;
+        })
+        .updateRecord(current.row, newValues, current.values);
+    });
+
+    $('form').addEventListener('submit', (e) => e.preventDefault()); // Enterでページ遷移しないように
+    $('cancelBtn').addEventListener('click', () => { $('editor').hidden = true; current = null; renderTable(); });
+    $('search').addEventListener('input', renderTable);
+
+    loadAll();
+  </script>
+</body>
+</html>
